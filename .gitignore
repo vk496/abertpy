@@ -1,0 +1,4 @@
+/.vscode
+/.poetry
+__pycache__
+/dist

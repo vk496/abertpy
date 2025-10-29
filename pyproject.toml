@@ -1,0 +1,27 @@
+[project]
+name = "abertpy"
+version = "0.1.0"
+description = ""
+authors = [{ name = "Valentin Kivachuk Burda", email = "vk18496@gmail.com" }]
+license = { text = "GPL3" }
+readme = "README.md"
+
+[project.scripts]
+abertpy = "abertpy.args:app"
+
+[tool.poetry.requires-plugins]
+poetry-plugin-export = ">=1.8"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+
+[tool.poetry.dependencies]
+python = ">=3.12,<4.0"
+pydantic = "^2"
+typer = "^0.20.0"
+pydantic-typer = "^0.0.13"
+aiohttp = "^3.13.1"
+loguru = "^0.7.3"
+asyncstdlib = "^3.13.1"
