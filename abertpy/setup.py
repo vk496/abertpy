@@ -374,4 +374,6 @@ async def setup_async(arg: SetupArgs):
 
 @app.command(help="Install everything on TVHeadend")
 def setup(arg: SetupArgs):
+    logger.info("Setup arguments:\n{}", arg.model_dump_json(indent=2))
+
     return asyncio.run(setup_async(arg))

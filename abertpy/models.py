@@ -1,6 +1,7 @@
 import asyncio
 import shutil
 import subprocess
+import sys
 from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Self
@@ -8,6 +9,7 @@ from typing import Annotated, Self
 import aiohttp
 import pydantic
 import typer
+from loguru import logger
 from pydantic import ByteSize, Field
 
 from abertpy.helpers import tvh_get_networks
@@ -19,13 +21,33 @@ _REFERENCE_PROXY = "proxy"
 class CommonArgs(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(validate_default=True)
 
+    debug: Annotated[
+        bool,
+        typer.Option(
+            "-d",
+            "--debug",
+            help="Debug info",
+        ),
+    ] = False
+
     tvheadend_url: Annotated[
         pydantic.HttpUrl,
         typer.Option(
-            help="Base URL of the TVheadend server",
+            "-t",
+            "--tvhurl",
+            help="Base URL of the TVheadend server. Ex: http://tvheadend.lan:9981/doesnt_matter_the_path",
             metavar="URL",
         ),
     ]
+
+    @pydantic.field_validator("debug")
+    @classmethod
+    def set_debug(cls, debug):
+        logger.remove()
+
+        logger.add(sys.stderr, level="DEBUG" if debug else "INFO")
+
+        return debug
 
     @pydantic.field_validator("tvheadend_url")
     @classmethod
@@ -54,6 +76,8 @@ class ProxyArgs(CommonArgs):
     service_uuid: Annotated[
         str,
         typer.Option(
+            "-s",
+            "--service",
             help="UUID of the Abertis service to proxy",
         ),
     ]
@@ -94,21 +118,34 @@ class SetupArgs(CommonArgs):
     network_uuid: Annotated[
         str | None,
         typer.Option(
+            "-n",
+            "--network-uuid",
             help="DVB-S Network containing Abertis muxes (usually Hispasat 30W). Empty to list all networks.",
         ),
     ] = None
 
     tsanalyze_path: Annotated[
-        pydantic.FilePath | None,
+        Path | None,
         typer.Option(
-            help="Path to the tsanalyze binary from TSDuck.",
+            " ",
+            "--path-tsanalyze",
+            help="Path to the tsanalyze binary from TSDuck. Will search for 'tsanalyze' by default",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            writable=False,
+            readable=True,
+            resolve_path=True,
         ),
     ] = None
 
     mux_buffer_size: Annotated[
         ByteSize,
         typer.Option(
+            " ",
+            "--max-buffer-size",
             help="Amount of data to buffer from each mux before analyzing",
+            metavar="SIZE",
         ),
     ] = Field(
         default="50MB"
@@ -117,16 +154,21 @@ class SetupArgs(CommonArgs):
     mux_buffer_time: Annotated[
         timedelta,
         typer.Option(
+            " ",
+            "--max-buffer-time",
             help="Maximum time to wait for buffering each mux before analyzing",
+            metavar="ISO 8601",
         ),
-    ] = timedelta(seconds=10)
+    ] = "PT10S"  # type: ignore
 
-    abertpy_exec: Annotated[
-        str,
+    abertpy_path: Annotated[
+        Path | None,
         typer.Option(
-            help="Command to execute for self referencing abertpy. It will be injected later for TVHeadend IPTV proxy, like '/usr/bin/abertpy'",
+            " ",
+            "--path-abertpy",
+            help="Command to execute for self referencing abertpyin IPTV mux. It will be injected later for TVHeadend IPTV proxy",
         ),
-    ] = "/usr/local/bin/abertpy"
+    ] = Path("/usr/local/bin/abertpy")
 
     abertpy_validate_binary: Annotated[
         bool,
@@ -138,14 +180,16 @@ class SetupArgs(CommonArgs):
     ] = True
 
     @pydantic.model_validator(mode="after")
-    def validate_abertpy_exec(self):
+    def validate_abertpy_path(self):
         if self.abertpy_validate_binary:
+
             try:
-                full_cmd: list[str] = self.abertpy_exec.split(" ")
+                full_cmd: list[str] = [str(self.abertpy_path)]
                 full_cmd.append(_REFERENCE_PING)
                 ret = subprocess.run(full_cmd, capture_output=True, text=True)
                 if "vk496" not in ret.stdout or ret.returncode != 18:
                     raise ValueError(f"Bad abertpy reference:\n {ret}")
+
             except Exception as e:
                 raise ValueError(
                     f"Bad abertpy binary. Consider disabling this validation"
@@ -156,10 +200,9 @@ class SetupArgs(CommonArgs):
     @pydantic.field_validator("tsanalyze_path")
     @classmethod
     def validate_tsduck(cls, tsanalyze_path):
-        bin_path: str | None = tsanalyze_path or shutil.which("tsanalyze")
-
-        if not bin_path:
-            bin_path = shutil.which("tsanalyze")
+        bin_path: str | None = (
+            str(tsanalyze_path) if tsanalyze_path else shutil.which("tsanalyze")
+        )
 
         if not bin_path:
             raise ValueError(
@@ -204,4 +247,4 @@ class SetupArgs(CommonArgs):
         return self
 
     def get_iptv_pipe(self, svc_mux_uuid: str) -> str:
-        return f"pipe://{self.abertpy_exec} {_REFERENCE_PROXY} --arg.tvheadend_url {self.tvheadend_url} --arg.service_uuid {svc_mux_uuid}"
+        return f"pipe://{self.abertpy_path} {_REFERENCE_PROXY} -t {self.tvheadend_url} -s {svc_mux_uuid}"
