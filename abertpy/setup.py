@@ -321,6 +321,8 @@ async def setup_async(arg: SetupArgs):
                 f"{base_url}/play/ticket/stream/mux/{mux.get('uuid')}",
             )
 
+            found_p_pid = []
+
             for pid in tsanalyzer_dict.get("pids", []):
                 # Skip PMT
                 if pid["pmt"]:
@@ -348,6 +350,8 @@ async def setup_async(arg: SetupArgs):
                 abertis_data_pid = pid["id"]
                 service_sid = pid["services"][0]
 
+                found_p_pid.append(abertis_data_pid)
+
                 svc_mux_uuid = await recreate_tvh_service(
                     session,
                     arg,
@@ -365,6 +369,12 @@ async def setup_async(arg: SetupArgs):
                 )
 
                 map_dataPID_SID[abertis_data_pid] = service_sid
+
+            logger.info(
+                "MUX {} private pids: {}",
+                mux_freq,
+                ",".join(str(_) for _ in sorted(found_p_pid)),
+            )
 
     for p_pid, pid_ca in sorted(_MAP_PPID_CA.items()):
         logger.info(

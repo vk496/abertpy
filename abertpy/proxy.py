@@ -2,6 +2,7 @@ import asyncio
 import sys
 
 import aiohttp
+import backoff
 from asyncstdlib import batched, chain
 from pydantic_typer import Typer
 
@@ -16,10 +17,13 @@ app = Typer()
 
 
 FRAME_SIZE = 188
+FAME_BUFFER = 100
+
 AFC_PAYLOAD_ONLY = 0x10
 AFC_ADAPTATION_PAYLOAD = 0x30
 
 
+@backoff.on_exception(backoff.expo, aiohttp.ServerDisconnectedError, max_tries=8, max_time=60)
 async def proxy_async(arg: ProxyArgs):
     base_url = arg.get_base_url()
 
@@ -33,7 +37,7 @@ async def proxy_async(arg: ProxyArgs):
     ) as session:
         async with session.get(endpoint) as response:
             chunks = batched(
-                chain.from_iterable(response.content.iter_chunked(FRAME_SIZE)),
+                chain.from_iterable(response.content.iter_chunked(FRAME_SIZE * FAME_BUFFER)),
                 FRAME_SIZE,
             )
 
