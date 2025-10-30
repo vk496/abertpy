@@ -82,6 +82,15 @@ class ProxyArgs(CommonArgs):
         ),
     ]
 
+    pipe_input: Annotated[
+        bool,
+        typer.Option(
+            "-p",
+            "--pipe-input",
+            help="Get the MUX from pipe instead of URL stream",
+        ),
+    ] = False
+
     @pydantic.model_validator(mode="after")
     def validate_service_uuid(self):
         async def validate_tvheadend_url(tvheadend_url, service_uuid):
