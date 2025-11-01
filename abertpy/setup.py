@@ -273,7 +273,9 @@ async def recreate_tvh_iptv_mux(
                     "enabled": 1,
                     "epg": 1,
                     "epg_module_id": "",
-                    "iptv_url": arg.get_iptv_pipe(svc_mux_uuid=svc_mux_uuid),
+                    "iptv_url": arg.get_iptv_pipe(
+                        svc_mux_uuid=svc_mux_uuid, allowed_pid=private_pid
+                    ),
                     "use_libav": 0,
                     "iptv_atsc": False,
                     "iptv_muxname": f"{_HARDCODED_KEY}: pd PID {private_pid}",

@@ -1,10 +1,7 @@
-import asyncio
 import sys
 from venv import logger
 
-import aiohttp
-import backoff
-from asyncstdlib.itertools import batched, chain
+import requests
 from pydantic_typer import Typer
 
 from abertpy.models import ProxyArgs
@@ -18,23 +15,14 @@ app = Typer()
 
 
 FRAME_SIZE = 188
-FAME_BUFFER = 20
 MPEG_TS_START_BYTE = 0x47
 
 AFC_PAYLOAD_ONLY = 0x10
 AFC_ADAPTATION_PAYLOAD = 0x30
 
-FAILED_START_BYTES = 0
 
-
-def process_data(packet: bytes):
-    global FAILED_START_BYTES
-
+def process_data(packet: bytes, allowed_pid: int):
     if not packet or packet[0] != MPEG_TS_START_BYTE:
-        if FAILED_START_BYTES > 100:
-            raise ConnectionError("MPEG-TS stream de-synced")
-
-        FAILED_START_BYTES += 1
         logger.error("MPEG-TS first byte unexpected")
         return
 
@@ -42,6 +30,10 @@ def process_data(packet: bytes):
         afc = packet[3] & 0x30
     except IndexError as e:
         logger.error(e)
+        return
+
+    tspid = ((packet[1] & 0x1F) << 8) | packet[2]
+    if tspid != allowed_pid:
         return
 
     payload: bytes | None = None
@@ -60,42 +52,14 @@ def process_data(packet: bytes):
         sys.stdout.buffer.write(payload)
 
 
-async def reader_pipe():
-    packet = b"go go go"
-
-    while packet:
-        packet = sys.stdin.buffer.read(188)
-        process_data(packet=packet)
-
-
-@backoff.on_exception(
-    backoff.expo, aiohttp.ServerDisconnectedError, max_tries=8, max_time=60
-)
-async def reader_url(arg: ProxyArgs):
-    base_url = arg.get_base_url()
-
-    endpoint = f"{base_url}/stream/service/{arg.service_uuid}"
-
-    async with aiohttp.ClientSession(
-        raise_for_status=True,
-        headers={
-            "User-Agent": "curl/aiohttp"
-        },  # https://docs.tvheadend.org/documentation/development/json-api/other-functions#play
-    ) as session:
-        async with session.get(endpoint) as response:
-            chunks = batched(
-                chain.from_iterable(
-                    response.content.iter_chunked(FRAME_SIZE * FAME_BUFFER)
-                ),
-                FRAME_SIZE,
-            )
-            async for packet in chunks:
-                process_data(packet=bytes(packet))
-
-
 @app.command(help="Proxy for Abertis streams")
 def proxy(arg: ProxyArgs):
-    if arg.pipe_input:
-        return reader_pipe()
 
-    return asyncio.run(reader_url(arg))
+    base_url = arg.get_base_url()
+    endpoint = f"{base_url}/stream/service/{arg.service_uuid}"
+
+    response = requests.get(
+        endpoint, stream=True, headers={"User-Agent": "curl/aiohttp"}
+    )
+    for packet in response.iter_content(chunk_size=FRAME_SIZE):
+        process_data(packet=packet, allowed_pid=arg.allowed_pid)

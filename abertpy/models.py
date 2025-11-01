@@ -82,14 +82,14 @@ class ProxyArgs(CommonArgs):
         ),
     ]
 
-    pipe_input: Annotated[
-        bool,
+    allowed_pid: Annotated[
+        int,
         typer.Option(
-            "-p",
-            "--pipe-input",
-            help="Get the MUX from pipe instead of URL stream",
+            "-a",
+            "--allowed-pids",
+            help="Allowed MPEG TS PID for decapsulation",
         ),
-    ] = False
+    ]
 
     @pydantic.model_validator(mode="after")
     def validate_service_uuid(self):
@@ -188,6 +188,21 @@ class SetupArgs(CommonArgs):
         ),
     ] = True
 
+    iptv_pipe_string: Annotated[
+        str,
+        typer.Option(
+            " ",
+            "--pipe-command",
+            help="""DVB-S Network containing Abertis muxes (usually Hispasat 30W). Empty to list all networks. Allowed variables:
+            \n
+            * abertpy_path: Full path to abertpy command\n
+            * allowed_pid: Private PID number of the REMUX\n
+            * svc_mux_uuid: UUID of the service REMUX\n
+            * tvheadend_url: Path for tvheadend_url base URL
+            """,
+        ),
+    ] = "pipe://{abertpy_path} proxy -a {allowed_pid} -t http://127.0.0.1:9981/ -s {svc_mux_uuid}"
+
     @pydantic.model_validator(mode="after")
     def validate_abertpy_path(self):
         if self.abertpy_validate_binary:
@@ -255,5 +270,10 @@ class SetupArgs(CommonArgs):
         asyncio.run(validate_network())
         return self
 
-    def get_iptv_pipe(self, svc_mux_uuid: str) -> str:
-        return f"pipe://{self.abertpy_path} {_REFERENCE_PROXY} -t {self.tvheadend_url} -s {svc_mux_uuid}"
+    def get_iptv_pipe(self, svc_mux_uuid: str, allowed_pid: int) -> str:
+        return self.iptv_pipe_string.format(
+            abertpy_path=self.abertpy_path,
+            tvheadend_url=self.tvheadend_url,
+            svc_mux_uuid=svc_mux_uuid,
+            allowed_pid=allowed_pid,
+        )
