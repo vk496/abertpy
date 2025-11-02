@@ -223,6 +223,15 @@ async def recreate_tvh_service(
 
     logger.debug(f"Original SID data: {sid_original}")
 
+    sid_original["stream"].append(
+        {
+            "pid": 8191,
+            "type": "CA",
+            "position": 0,
+            "caidlist": [{"caid": 9728}, {"caid": 9728}],
+        }
+    )
+
     # Hijack Tvheadend
     sid_original["sid"] = private_pid
     sid_original["verified"] = (
@@ -231,7 +240,7 @@ async def recreate_tvh_service(
     sid_original["pmt"] = _HARDCODED_PMT  # Always 8000?
     sid_original["stream"].append({"type": "H264", "position": 0, "pid": private_pid})
     sid_original["svcname"] = (
-        f"{_HARDCODED_KEY}: PID {private_pid} (SID: {service_sid})"  # pd stands for private data
+        f"{_HARDCODED_KEY}: raw pPID {private_pid} (SID: {service_sid})"  # pd stands for private data
     )
     sid_original["enabled"] = True
 
@@ -252,6 +261,7 @@ async def recreate_tvh_iptv_mux(
     iptv_network_uuid: str,
     svc_mux_uuid: str,
     private_pid: int,
+    mux_freq: str,
 ):
 
     muxes = await tvh_get_muxes(session, arg.get_base_url())
@@ -278,7 +288,7 @@ async def recreate_tvh_iptv_mux(
                     ),
                     "use_libav": 0,
                     "iptv_atsc": False,
-                    "iptv_muxname": f"{_HARDCODED_KEY}: pd PID {private_pid}",
+                    "iptv_muxname": f"{_HARDCODED_KEY}: MUX {mux_freq} pPID {private_pid}",
                     "channel_number": "0",
                     "iptv_sname": "",
                 }
@@ -368,6 +378,7 @@ async def setup_async(arg: SetupArgs):
                     iptv_network_uuid=abertis_net_uuid,
                     svc_mux_uuid=svc_mux_uuid,
                     private_pid=abertis_data_pid,
+                    mux_freq=mux_freq,
                 )
 
                 map_dataPID_SID[abertis_data_pid] = service_sid

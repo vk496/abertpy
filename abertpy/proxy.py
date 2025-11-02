@@ -1,6 +1,7 @@
 import sys
 from venv import logger
 
+import backoff
 import requests
 from pydantic_typer import Typer
 
@@ -52,6 +53,7 @@ def process_data(packet: bytes, allowed_pid: int):
         sys.stdout.buffer.write(payload)
 
 
+@backoff.on_exception(backoff.expo, ConnectionError, max_time=10)
 @app.command(help="Proxy for Abertis streams")
 def proxy(arg: ProxyArgs):
 
