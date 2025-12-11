@@ -1,0 +1,2 @@
+_HARDCODED_KEY = "abertpy"
+_HARDCODED_PMT = 8000

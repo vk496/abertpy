@@ -6,14 +6,11 @@ import aiohttp
 from loguru import logger
 from pydantic_typer import Typer
 
-from abertpy.helpers import tvh_get_muxes, tvh_get_networks
+from abertpy import _HARDCODED_KEY
+from abertpy.helpers import patch_original_SID_svc, tvh_get_muxes, tvh_get_networks
 from abertpy.models import SetupArgs
 
 app = Typer()
-
-_HARDCODED_KEY = "abertpy"
-_HARDCODED_PMT = 8000
-
 
 _MAP_PPID_CA: dict[int, int] = {}
 
@@ -221,28 +218,7 @@ async def recreate_tvh_service(
     if tvh_overriden_uuid:
         return tvh_overriden_uuid
 
-    logger.debug(f"Original SID data: {sid_original}")
-
-    sid_original["stream"].append(
-        {
-            "pid": 8191,
-            "type": "CA",
-            "position": 0,
-            "caidlist": [{"caid": 9728}, {"caid": 9728}],
-        }
-    )
-
-    # Hijack Tvheadend
-    sid_original["sid"] = private_pid
-    sid_original["verified"] = (
-        1  # Very important ortherwise tvheadend will not stream data
-    )
-    sid_original["pmt"] = _HARDCODED_PMT  # Always 8000?
-    sid_original["stream"].append({"type": "H264", "position": 0, "pid": private_pid})
-    sid_original["svcname"] = (
-        f"{_HARDCODED_KEY}: raw pPID {private_pid} (SID: {service_sid})"  # pd stands for private data
-    )
-    sid_original["enabled"] = True
+    patch_original_SID_svc(sid_original, private_pid, str(service_sid))
 
     async with session.post(
         arg.get_base_url() + "/api/raw/import",

@@ -1,11 +1,18 @@
+import asyncio
+import json
+import re
 import sys
 from venv import logger
 
+import aiohttp
 import backoff
 import requests
 from pydantic_typer import Typer
 
+from abertpy import _HARDCODED_KEY
+from abertpy.helpers import tvh_get_svc_raw, tvh_get_svc_SID
 from abertpy.models import ProxyArgs
+from abertpy.setup import patch_original_SID_svc
 
 app = Typer()
 
@@ -53,12 +60,179 @@ def process_data(packet: bytes, allowed_pid: int):
         sys.stdout.buffer.write(payload)
 
 
+async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
+    current_abertpy_mux = arg.service_uuid
+    async with aiohttp.ClientSession(
+        raise_for_status=True,
+        headers={
+            "User-Agent": "curl/aiohttp"
+        },  # https://docs.tvheadend.org/documentation/development/json-api/other-functions#play
+    ) as session:
+
+        svc_overriden = await tvh_get_svc_raw(
+            session=session,
+            base_url=arg.get_base_url(),
+            abertpy_ppid_uuid=current_abertpy_mux,
+        )
+
+        # Extract original SID
+        name_abertpy_svc = svc_overriden.get("svcname", None)
+        if not name_abertpy_svc or _HARDCODED_KEY not in name_abertpy_svc:
+            raise ValueError(
+                f"Cannot extract svcname from Abertis PPID service {current_abertpy_mux}"
+            )
+
+        match = re.search(r"\(SID:\s*(\w+)\)", name_abertpy_svc)
+        if not match:
+            raise ValueError(
+                f"Cannot extract SID from service name: {name_abertpy_svc}"
+            )
+
+        original_sid: str = match.group(1)
+
+        match = re.search(r"pPID\s*(\w+)", name_abertpy_svc)
+        if not match:
+            raise ValueError(
+                f"Cannot extract pPID from service name: {name_abertpy_svc}"
+            )
+
+        original_ppid: str = match.group(1)
+
+        # Get original Hispasat SVC from SID
+        svc_hispasat_original = await tvh_get_svc_SID(
+            session=session,
+            base_url=arg.get_base_url(),
+            original_sid=original_sid,
+        )
+
+        # If we cant find the original Hispasat SVC, is because only overriden SVC exists
+        if svc_hispasat_original is None:
+            return
+
+        new_mux_uuid: str = svc_hispasat_original.get("uuid", "")
+
+        # Validate if mux needs to be recreated
+        if new_mux_uuid == current_abertpy_mux:
+            logger.debug(
+                "No need to recreate mux, already pointing to original service"
+            )
+            return
+
+        # Mux was changed. Recreate it
+        logger.warning("Recreating Abertis mux to point to original service")
+
+        private_pid: int = int(svc_overriden.get("sid"))  # type: ignore
+
+        # Obtain the RAW one
+
+        svc_hispasat_raw = await tvh_get_svc_raw(
+            session=session,
+            base_url=arg.get_base_url(),
+            abertpy_ppid_uuid=svc_hispasat_original["uuid"],
+        )
+
+        patch_original_SID_svc(svc_hispasat_raw, private_pid, original_sid)
+
+        async with session.post(
+            arg.get_base_url() + "/api/raw/import",
+            data={
+                "node": json.dumps(svc_hispasat_raw),
+            },
+        ) as response:
+            pass
+
+        # Delete old SVC
+        svc_overriden_old_uuid = svc_overriden["uuid"]
+
+        async with session.post(
+            arg.get_base_url() + "/api/idnode/delete",
+            data={
+                "uuid": svc_overriden_old_uuid,
+            },
+        ) as response:
+            resp = await response.json()
+
+        # Update mux reference (iptv_url) to the new UUID of the service
+        async with session.post(
+            f"{arg.get_base_url()}/api/mpegts/mux/grid",
+            data={
+                "hidemode": "none",
+                "filter": json.dumps(
+                    [
+                        {
+                            "type": "string",
+                            "field": "name",
+                            "value": f"pPID {original_ppid}",
+                        }
+                    ]
+                ),
+            },
+        ) as response:
+            resp = await response.json()
+
+        svcs: list = resp.get("entries", [])
+        if not svcs:
+            raise ValueError(f"Cannot find Abertis PPID mux")
+
+        parent_mux_uuid = svcs[0].get("uuid")
+
+        async with session.post(
+            f"{arg.get_base_url()}/api/idnode/load",
+            data={
+                "uuid": parent_mux_uuid,
+            },
+        ) as response:
+            resp = await response.json()
+
+        load_mux: list = resp.get("entries", [])
+        if not load_mux:
+            raise ValueError(f"Cannot load Abertis PPID mux")
+
+        mux_loaded_data = load_mux[0]
+
+        new_mux_data = {}
+
+        found_iptv_url = False
+        for mux_param in mux_loaded_data.get("params", []):
+            new_mux_data[mux_param.get("id")] = mux_param.get("value")
+
+            if mux_param.get("id") == "iptv_url":
+                found_iptv_url = True
+
+        if not found_iptv_url:
+            raise ValueError(f"Cannot find iptv_url param in mux data")
+
+        new_mux_data["iptv_url"] = new_mux_data["iptv_url"].replace(
+            svc_overriden_old_uuid, new_mux_uuid
+        )
+
+        # Add missing uuid field
+        new_mux_data["uuid"] = parent_mux_uuid
+
+        async with session.post(
+            f"{arg.get_base_url()}/api/idnode/save",
+            data={
+                "node": json.dumps(new_mux_data),
+            },
+        ) as response:
+            resp = await response.json()
+
+        return new_mux_uuid
+
+
 @backoff.on_exception(backoff.expo, ConnectionError, max_time=10)
 @app.command(help="Proxy for Abertis streams")
 def proxy(arg: ProxyArgs):
 
     base_url = arg.get_base_url()
-    endpoint = f"{base_url}/stream/service/{arg.service_uuid}"
+
+    new_svc_uuid = asyncio.run(recreate_mux_if_needed(arg))
+
+    if new_svc_uuid:
+        # Was corrected
+        endpoint = f"{base_url}/stream/service/{new_svc_uuid}"
+    else:
+        endpoint = f"{base_url}/stream/service/{arg.service_uuid}"
 
     response = requests.get(
         endpoint, stream=True, headers={"User-Agent": "curl/aiohttp"}
