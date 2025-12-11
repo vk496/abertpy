@@ -20,8 +20,8 @@ Before installing abertpy, ensure the following components are properly set up:
 - ✅ A working TVHeadend instance already receiving Abertis channels via Hispasat 30.0W
 - 🧪 [TSDuck](https://tsduck.io/) installed (specifically the `tsanalyze` binary)
 - 🔐 [Oscam-emu](https://hub.docker.com/r/chris230291/oscam-emu) running and configured in TVHeadend  
-  - ⚠️ Use **CCcam** protocol instead of **DVB-API**
-- 📦 [pipx](https://github.com/pypa/pipx) installed (optional but recommended)
+  - ⚠️ Use **DVB-API (caPMT)** protocol instead of **CCcam** or **New and**
+- 📦 [pipx](https://github.com/pypa/pipx) installed (uvx or any other are fine too)
 
 ---
 
