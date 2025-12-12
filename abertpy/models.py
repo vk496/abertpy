@@ -12,7 +12,8 @@ import typer
 from loguru import logger
 from pydantic import ByteSize, Field
 
-from abertpy.helpers import tvh_get_networks
+from abertpy import _HARDCODED_KEY
+from abertpy.helpers import extract_ppid_from_svcname, tvh_get_networks
 
 _REFERENCE_PING = "ping"
 _REFERENCE_PROXY = "proxy"
@@ -109,15 +110,32 @@ class ProxyArgs(CommonArgs):
                     resp = await response.json()
 
             svcs: list = resp.get("entries", [])
+
+            recreated_uuid: str | None = None
+
             for service in svcs:
-                if service.get("uuid", "") == service_uuid:
+                svc_uuid = service.get("uuid", "")
+                if svc_uuid == service_uuid:
                     return service_uuid
+
+                svcname: str = service.get("svcname", "")
+                ppid = extract_ppid_from_svcname(svcname)
+                if _HARDCODED_KEY in svcname and ppid and ppid == self.allowed_pid:
+                    recreated_uuid = svc_uuid
+
+            if recreated_uuid:
+                logger.warning(
+                    f"Service UUID {service_uuid} not found. Using service with matching pPID {self.allowed_pid} and UUID {recreated_uuid}."
+                )
+                return recreated_uuid
 
             raise ValueError(
                 f"Service UUID {service_uuid} not found in TVheadend ({len(svcs)} services scanned)."
             )
 
-        asyncio.run(validate_tvheadend_url(self.tvheadend_url, self.service_uuid))
+        self.service_uuid = asyncio.run(
+            validate_tvheadend_url(self.tvheadend_url, self.service_uuid)
+        )
         return self
 
 

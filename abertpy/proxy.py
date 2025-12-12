@@ -10,7 +10,7 @@ import requests
 from pydantic_typer import Typer
 
 from abertpy import _HARDCODED_KEY
-from abertpy.helpers import tvh_get_svc_raw, tvh_get_svc_SID
+from abertpy.helpers import extract_ppid_from_svcname, tvh_get_svc_raw, tvh_get_svc_SID
 from abertpy.models import ProxyArgs
 from abertpy.setup import patch_original_SID_svc
 
@@ -90,13 +90,11 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
 
         original_sid: str = match.group(1)
 
-        match = re.search(r"pPID\s*(\w+)", name_abertpy_svc)
-        if not match:
+        original_ppid = extract_ppid_from_svcname(name_abertpy_svc)
+        if not original_ppid:
             raise ValueError(
                 f"Cannot extract pPID from service name: {name_abertpy_svc}"
             )
-
-        original_ppid: str = match.group(1)
 
         # Get original Hispasat SVC from SID
         svc_hispasat_original = await tvh_get_svc_SID(
@@ -105,54 +103,54 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
             original_sid=original_sid,
         )
 
-        # If we cant find the original Hispasat SVC, is because only overriden SVC exists
-        if svc_hispasat_original is None:
-            return
-
-        new_mux_uuid: str = svc_hispasat_original.get("uuid", "")
-
         # Validate if mux needs to be recreated
-        if new_mux_uuid == current_abertpy_mux:
+        if (
+            svc_hispasat_original is None
+            or svc_hispasat_original.get("uuid", "") == current_abertpy_mux
+        ):
+            new_mux_uuid = current_abertpy_mux
             logger.debug(
                 "No need to recreate mux, already pointing to original service"
             )
-            return
+        else:
 
-        # Mux was changed. Recreate it
-        logger.warning("Recreating Abertis mux to point to original service")
+            new_mux_uuid: str = svc_hispasat_original.get("uuid", "")
 
-        private_pid: int = int(svc_overriden.get("sid"))  # type: ignore
+            # Mux was changed. Recreate it
+            logger.warning("Recreating Abertis mux to point to original service")
 
-        # Obtain the RAW one
+            private_pid: int = int(svc_overriden.get("sid"))  # type: ignore
 
-        svc_hispasat_raw = await tvh_get_svc_raw(
-            session=session,
-            base_url=arg.get_base_url(),
-            abertpy_ppid_uuid=svc_hispasat_original["uuid"],
-        )
+            # Obtain the RAW one
 
-        patch_original_SID_svc(svc_hispasat_raw, private_pid, original_sid)
+            svc_hispasat_raw = await tvh_get_svc_raw(
+                session=session,
+                base_url=arg.get_base_url(),
+                abertpy_ppid_uuid=svc_hispasat_original["uuid"],
+            )
 
-        async with session.post(
-            arg.get_base_url() + "/api/raw/import",
-            data={
-                "node": json.dumps(svc_hispasat_raw),
-            },
-        ) as response:
-            pass
+            patch_original_SID_svc(svc_hispasat_raw, private_pid, original_sid)
 
-        # Delete old SVC
-        svc_overriden_old_uuid = svc_overriden["uuid"]
+            async with session.post(
+                arg.get_base_url() + "/api/raw/import",
+                data={
+                    "node": json.dumps(svc_hispasat_raw),
+                },
+            ) as response:
+                pass
 
-        async with session.post(
-            arg.get_base_url() + "/api/idnode/delete",
-            data={
-                "uuid": svc_overriden_old_uuid,
-            },
-        ) as response:
-            resp = await response.json()
+            # Delete old SVC
+            svc_overriden_old_uuid = svc_overriden["uuid"]
 
-        # Update mux reference (iptv_url) to the new UUID of the service
+            async with session.post(
+                arg.get_base_url() + "/api/idnode/delete",
+                data={
+                    "uuid": svc_overriden_old_uuid,
+                },
+            ) as response:
+                resp = await response.json()
+
+        # Update mux reference (iptv_url) to the new UUID of the service if needed
         async with session.post(
             f"{arg.get_base_url()}/api/mpegts/mux/grid",
             data={
@@ -202,22 +200,25 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
         if not found_iptv_url:
             raise ValueError(f"Cannot find iptv_url param in mux data")
 
-        new_mux_data["iptv_url"] = new_mux_data["iptv_url"].replace(
-            svc_overriden_old_uuid, new_mux_uuid
-        )
-
         # Add missing uuid field
         new_mux_data["uuid"] = parent_mux_uuid
 
-        async with session.post(
-            f"{arg.get_base_url()}/api/idnode/save",
-            data={
-                "node": json.dumps(new_mux_data),
-            },
-        ) as response:
-            resp = await response.json()
+        if new_mux_uuid not in new_mux_data["iptv_url"]:
+            logger.warning("MUX doesn't point to the correct service, updating it.")
 
-        return new_mux_uuid
+            new_mux_data["iptv_url"] = re.sub(
+                r"[a-fA-F0-9]{32}", new_mux_uuid, new_mux_data["iptv_url"], count=1
+            )
+
+            async with session.post(
+                f"{arg.get_base_url()}/api/idnode/save",
+                data={
+                    "node": json.dumps(new_mux_data),
+                },
+            ) as response:
+                resp = await response.json()
+
+            return new_mux_uuid
 
 
 @backoff.on_exception(backoff.expo, ConnectionError, max_time=10)

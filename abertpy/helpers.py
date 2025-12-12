@@ -1,4 +1,5 @@
 import json
+import re
 
 import aiohttp
 from loguru import logger
@@ -103,3 +104,15 @@ def patch_original_SID_svc(sid_original: dict, private_pid: int, service_sid: st
         f"{_HARDCODED_KEY}: raw pPID {private_pid} (SID: {service_sid})"  # pd stands for private data
     )
     sid_original["enabled"] = True
+
+
+def extract_ppid_from_svcname(svcname: str) -> int | None:
+    """
+    Extract the pPID from the svcname string.
+    Example svcname: "Abertis: raw pPID 1234 (SID: 5678)"
+    """
+    match = re.search(r"pPID\s*(\w+)", svcname)
+    if not match:
+        return None
+
+    return int(match.group(1))
