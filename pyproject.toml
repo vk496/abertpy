@@ -1,6 +1,6 @@
 [project]
 name = "abertpy"
-version = "0.3.0"
+version = "0.3.1"
 description = ""
 authors = [{ name = "Valentin Kivachuk Burda", email = "vk18496@gmail.com" }]
 license = { text = "GPL3" }
