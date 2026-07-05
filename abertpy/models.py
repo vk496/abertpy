@@ -206,14 +206,24 @@ class SetupArgs(CommonArgs):
         ),
     ] = True
 
-    rescan: Annotated[
+    fast_scan: Annotated[
         bool,
         typer.Option(
             " ",
-            "--rescan/--no-rescan",
-            help="Rescan and rebuild every mux from scratch. By default, muxes that are already configured are skipped for speed.",
+            "--fast-scan/--no-fast-scan",
+            help="Only scan the muxes known to carry Abertis instead of the whole network. Faster, but misses any Abertis mux not in the known list. Default scans everything.",
         ),
     ] = False
+
+    only_muxes: Annotated[
+        list[str],
+        typer.Option(
+            " ",
+            "--mux",
+            help="Scan only these mux names (repeatable), e.g. --mux 11675H --mux 12631V. Names not present as targets are ignored. Overrides --fast-scan. Default scans everything.",
+            metavar="NAME",
+        ),
+    ] = []
 
     proxy_url: Annotated[
         pydantic.HttpUrl,
