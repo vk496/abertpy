@@ -62,13 +62,14 @@ def process_data(packet: bytes, allowed_pid: int):
 
 async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
     current_abertpy_mux = arg.service_uuid
-    async with aiohttp.ClientSession(
-        raise_for_status=True,
-        headers={
-            "User-Agent": "curl/aiohttp"
-        },  # https://docs.tvheadend.org/documentation/development/json-api/other-functions#play
-    ) as session:
-
+    async with (
+        aiohttp.ClientSession(
+            raise_for_status=True,
+            headers={
+                "User-Agent": "curl/aiohttp"
+            },  # https://docs.tvheadend.org/documentation/development/json-api/other-functions#play
+        ) as session
+    ):
         svc_overriden = await tvh_get_svc_raw(
             session=session,
             base_url=arg.get_base_url(),
@@ -113,7 +114,6 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
                 "No need to recreate mux, already pointing to original service"
             )
         else:
-
             new_mux_uuid: str = svc_hispasat_original.get("uuid", "")
 
             # Mux was changed. Recreate it
@@ -170,7 +170,7 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
 
         svcs: list = resp.get("entries", [])
         if not svcs:
-            raise ValueError(f"Cannot find Abertis PPID mux")
+            raise ValueError("Cannot find Abertis PPID mux")
 
         parent_mux_uuid = svcs[0].get("uuid")
 
@@ -184,7 +184,7 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
 
         load_mux: list = resp.get("entries", [])
         if not load_mux:
-            raise ValueError(f"Cannot load Abertis PPID mux")
+            raise ValueError("Cannot load Abertis PPID mux")
 
         mux_loaded_data = load_mux[0]
 
@@ -198,7 +198,7 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
                 found_iptv_url = True
 
         if not found_iptv_url:
-            raise ValueError(f"Cannot find iptv_url param in mux data")
+            raise ValueError("Cannot find iptv_url param in mux data")
 
         # Add missing uuid field
         new_mux_data["uuid"] = parent_mux_uuid

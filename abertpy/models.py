@@ -206,6 +206,15 @@ class SetupArgs(CommonArgs):
         ),
     ] = True
 
+    rescan: Annotated[
+        bool,
+        typer.Option(
+            " ",
+            "--rescan/--no-rescan",
+            help="Rescan and rebuild every mux from scratch. By default, muxes that are already configured are skipped for speed.",
+        ),
+    ] = False
+
     proxy_url: Annotated[
         pydantic.HttpUrl,
         typer.Option(
@@ -283,23 +292,31 @@ class SetupArgs(CommonArgs):
             async with aiohttp.ClientSession() as session:
                 networks = await tvh_get_networks(session, base_url)
 
-                all_networks: dict[str, str] = {
+                return {
                     network["uuid"]: network["networkname"]
                     for network in networks.get("entries", [])
                 }
 
-                if self.network_uuid is None or self.network_uuid not in all_networks:
-                    raise ValueError(
-                        "Missing network argument. Available UUID networks:\n"
-                        + "\n".join(
-                            f"{net_uuid} ({net_name})"
-                            for net_uuid, net_name in all_networks.items()
-                        )
-                        + "\n"
-                    )
+        all_networks: dict[str, str] = asyncio.run(validate_network())
 
-        asyncio.run(validate_network())
-        return self
+        if self.network_uuid in all_networks:
+            return self
+
+        # No (valid) network selected: print the available ones cleanly and exit
+        # instead of surfacing a noisy validation traceback.
+        if self.network_uuid is None:
+            typer.echo("Select a network with --network-uuid. Available networks:")
+        else:
+            typer.echo(
+                f"Network UUID {self.network_uuid!r} not found. Available networks:",
+                err=True,
+            )
+
+        width = max((len(u) for u in all_networks), default=0)
+        for net_uuid, net_name in all_networks.items():
+            typer.echo(f"  {net_uuid:<{width}}  {net_name}")
+
+        raise typer.Exit(0 if self.network_uuid is None else 1)
 
     def get_iptv_pipe(self, svc_mux_uuid: str, allowed_pid: int) -> str:
         return self.iptv_pipe_string.format(

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import subprocess
 
 import aiohttp
@@ -7,7 +8,12 @@ from loguru import logger
 from pydantic_typer import Typer
 
 from abertpy import _HARDCODED_KEY
-from abertpy.helpers import patch_original_SID_svc, tvh_get_muxes, tvh_get_networks
+from abertpy.helpers import (
+    patch_original_SID_svc,
+    tvh_get_muxes,
+    tvh_get_networks,
+    tvh_get_svc_raw,
+)
 from abertpy.models import SetupArgs
 
 app = Typer()
@@ -231,6 +237,63 @@ async def recreate_tvh_service(
     return tvh_original_uuid
 
 
+async def get_existing_iptv_muxnames(
+    session: aiohttp.ClientSession,
+    arg: SetupArgs,
+    iptv_network_uuid: str,
+) -> list[str]:
+    """Names of the Abertis IPTV muxes already installed in the IPTV network."""
+    muxes = await tvh_get_muxes(session, arg.get_base_url())
+
+    return [
+        mux.get("iptv_muxname", "")
+        for mux in muxes.get("entries", [])
+        if mux.get("network_uuid", None) == iptv_network_uuid
+        and _HARDCODED_KEY in mux.get("iptv_muxname", "")
+    ]
+
+
+async def collect_existing_ca_keys(
+    session: aiohttp.ClientSession,
+    arg: SetupArgs,
+    mux_uuid: str,
+    private_pids: list[int],
+) -> None:
+    """Rebuild the CA-key map from already-overridden services (cheap, no scan)."""
+    async with session.post(
+        arg.get_base_url() + "/api/mpegts/service/grid",
+        data={
+            "hidemode": "none",
+            "filter": json.dumps(
+                [
+                    {
+                        "type": "string",
+                        "field": "svcname",
+                        "value": _HARDCODED_KEY,
+                    }
+                ]
+            ),
+        },
+    ) as response:
+        resp = await response.json()
+
+    uuid_by_sid: dict[int, str] = {
+        service.get("sid", -1): service["uuid"]
+        for service in resp.get("entries", [])
+        if service.get("multiplex_uuid", "") == mux_uuid
+        and _HARDCODED_KEY in service.get("svcname", "")
+    }
+
+    for private_pid in private_pids:
+        svc_uuid = uuid_by_sid.get(private_pid)
+        if not svc_uuid:
+            continue
+
+        raw = await tvh_get_svc_raw(session, arg.get_base_url(), svc_uuid)
+        if pcr := raw.get("pcr", None):
+            _MAP_PPID_CA[private_pid] = pcr
+
+
 async def recreate_tvh_iptv_mux(
     session: aiohttp.ClientSession,
     arg: SetupArgs,
@@ -296,11 +359,40 @@ async def setup_async(arg: SetupArgs):
         # Get enabled muxes from tvheadend
         list_muxes = await get_muxes(session, arg)
 
+        # Muxes already installed, to skip the expensive rescan below
+        existing_iptv_muxnames = await get_existing_iptv_muxnames(
+            session, arg, abertis_net_uuid
+        )
+
         map_dataPID_SID: dict[int, int] = {}
 
         for mux in list_muxes:
             mux_uuid = mux["uuid"]
             mux_freq: str = mux.get("name", "")
+
+            # Skip fully-configured muxes: rescanning them is the slow part
+            already_configured = [
+                name
+                for name in existing_iptv_muxnames
+                if f"MUX {mux_freq} pPID" in name
+            ]
+            if already_configured and not arg.rescan:
+                existing_ppids = sorted(
+                    {
+                        int(match.group(1))
+                        for name in already_configured
+                        if (match := re.search(r"pPID\s+(\d+)", name))
+                    }
+                )
+                logger.info(
+                    "MUX {} already configured, skipping scan (pPIDs: {})",
+                    mux_freq,
+                    ",".join(str(p) for p in existing_ppids),
+                )
+                await collect_existing_ca_keys(
+                    session, arg, mux_uuid, existing_ppids
+                )
+                continue
 
             logger.debug(f"Scanning mux: {mux_uuid} - {mux_freq}")
             tsanalyzer_dict = await get_mux_data(
