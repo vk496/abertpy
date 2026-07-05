@@ -206,6 +206,18 @@ class SetupArgs(CommonArgs):
         ),
     ] = True
 
+    proxy_url: Annotated[
+        pydantic.HttpUrl,
+        typer.Option(
+            " ",
+            "--proxy-url",
+            help="TVheadend URL baked into the installed proxy pipe command. Runs on the TVheadend host, so it usually points to localhost.",
+            metavar="URL",
+        ),
+    ] = Field(
+        default="http://127.0.0.1:9981/"
+    )  # type: ignore
+
     iptv_pipe_string: Annotated[
         str,
         typer.Option(
@@ -216,10 +228,11 @@ class SetupArgs(CommonArgs):
             * abertpy_path: Full path to abertpy command\n
             * allowed_pid: Private PID number of the REMUX\n
             * svc_mux_uuid: UUID of the service REMUX\n
-            * tvheadend_url: Path for tvheadend_url base URL
+            * tvheadend_url: Path for tvheadend_url base URL\n
+            * proxy_url: URL baked into the proxy command (--proxy-url)
             """,
         ),
-    ] = "pipe://{abertpy_path} proxy -a {allowed_pid} -t http://127.0.0.1:9981/ -s {svc_mux_uuid}"
+    ] = "pipe://{abertpy_path} proxy -a {allowed_pid} -t {proxy_url} -s {svc_mux_uuid}"
 
     @pydantic.model_validator(mode="after")
     def validate_abertpy_path(self):
@@ -292,6 +305,7 @@ class SetupArgs(CommonArgs):
         return self.iptv_pipe_string.format(
             abertpy_path=self.abertpy_path,
             tvheadend_url=self.tvheadend_url,
+            proxy_url=self.proxy_url,
             svc_mux_uuid=svc_mux_uuid,
             allowed_pid=allowed_pid,
         )
