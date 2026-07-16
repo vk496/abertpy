@@ -139,6 +139,19 @@ class ProxyArgs(CommonArgs):
         return self
 
 
+class CleanupArgs(CommonArgs):
+    model_config = pydantic.ConfigDict(validate_default=True)
+
+    apply: Annotated[
+        bool,
+        typer.Option(
+            " ",
+            "--apply/--dry-run",
+            help="Actually delete the stale services. Default only reports them.",
+        ),
+    ] = False
+
+
 class SetupArgs(CommonArgs):
     model_config = pydantic.ConfigDict(validate_default=True)
 

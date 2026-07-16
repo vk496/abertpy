@@ -2,15 +2,24 @@ import asyncio
 import json
 import re
 import sys
-from venv import logger
 
 import aiohttp
 import backoff
 import requests
+from loguru import logger
 from pydantic_typer import Typer
 
 from abertpy import _HARDCODED_KEY
-from abertpy.helpers import extract_ppid_from_svcname, tvh_get_svc_raw, tvh_get_svc_SID
+from abertpy.helpers import (
+    extract_ppid_from_svcname,
+    tvh_delete_svcs,
+    tvh_find_overrides,
+    tvh_get_muxes,
+    tvh_get_svc_grid,
+    tvh_get_svc_raw,
+    tvh_get_svc_SID,
+    tvh_set_mux_iptv_url,
+)
 from abertpy.models import ProxyArgs
 from abertpy.setup import patch_original_SID_svc
 
@@ -97,11 +106,28 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
                 f"Cannot extract pPID from service name: {name_abertpy_svc}"
             )
 
+        private_pid: int = int(svc_overriden.get("sid"))  # type: ignore
+
+        # raw/export carries no mux reference, so resolve the transponder our
+        # override lives on from the grid. Without it the SID lookup below could
+        # match the same SID on a different transponder.
+        parent_dvb_mux_uuid: str | None = next(
+            (
+                svc.get("multiplex_uuid", "")
+                for svc in await tvh_get_svc_grid(
+                    session, arg.get_base_url(), sid=private_pid
+                )
+                if svc.get("uuid", "") == current_abertpy_mux
+            ),
+            None,
+        )
+
         # Get original Hispasat SVC from SID
         svc_hispasat_original = await tvh_get_svc_SID(
             session=session,
             base_url=arg.get_base_url(),
             original_sid=original_sid,
+            mux_uuid=parent_dvb_mux_uuid,
         )
 
         # Validate if mux needs to be recreated
@@ -118,8 +144,6 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
 
             # Mux was changed. Recreate it
             logger.warning("Recreating Abertis mux to point to original service")
-
-            private_pid: int = int(svc_overriden.get("sid"))  # type: ignore
 
             # Obtain the RAW one
 
@@ -139,89 +163,102 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
             ) as response:
                 pass
 
-            # Delete old SVC
-            svc_overriden_old_uuid = svc_overriden["uuid"]
+            # Reap every override this one replaces, not just the uuid the mux
+            # happened to name: the import above has just taken over the node we
+            # now stream from, so anything else on this pPID is dead weight.
+            if parent_dvb_mux_uuid:
+                stale = [
+                    svc["uuid"]
+                    for svc in await tvh_find_overrides(
+                        session, arg.get_base_url(), parent_dvb_mux_uuid, private_pid
+                    )
+                    if svc["uuid"] != new_mux_uuid
+                ]
+            else:
+                stale = [svc_overriden["uuid"]]
 
-            async with session.post(
-                arg.get_base_url() + "/api/idnode/delete",
-                data={
-                    "uuid": svc_overriden_old_uuid,
-                },
-            ) as response:
-                resp = await response.json()
+            deleted = await tvh_delete_svcs(session, arg.get_base_url(), stale)
+            logger.info("pPID {}: reaped {} stale override(s)", private_pid, deleted)
 
-        # Update mux reference (iptv_url) to the new UUID of the service if needed
-        async with session.post(
-            f"{arg.get_base_url()}/api/mpegts/mux/grid",
-            data={
-                "hidemode": "none",
-                "filter": json.dumps(
-                    [
-                        {
-                            "type": "string",
-                            "field": "name",
-                            "value": f"pPID {original_ppid}",
-                        }
-                    ]
-                ),
-            },
-        ) as response:
-            resp = await response.json()
+        # Update mux references (iptv_url) to the new UUID of the service
+        all_muxes: list = (await tvh_get_muxes(session, arg.get_base_url())).get(
+            "entries", []
+        )
 
-        svcs: list = resp.get("entries", [])
-        if not svcs:
-            raise ValueError("Cannot find Abertis PPID mux")
+        dvb_mux_name: str = next(
+            (
+                mux.get("name", "")
+                for mux in all_muxes
+                if mux["uuid"] == parent_dvb_mux_uuid
+            ),
+            "",
+        )
+        target_muxname = (
+            f"{_HARDCODED_KEY}: MUX {dvb_mux_name} pPID {original_ppid}"
+            if dvb_mux_name
+            else ""
+        )
 
-        parent_mux_uuid = svcs[0].get("uuid")
+        # More than one mux can share a service: an early scan of the wrong
+        # transponder left muxes named for one and fed by another, and those are
+        # the ones carrying the channel mappings. Repointing only the
+        # canonically-named one would strand the rest on the service just reaped,
+        # so fix every mux that fed off this pPID, keyed on the uuid it holds.
+        # A pPID that genuinely repeats on another transponder has its own
+        # override, is absent from `orphaned`, and is left alone.
+        orphaned: set[str] = set(stale) | {current_abertpy_mux}
 
-        async with session.post(
-            f"{arg.get_base_url()}/api/idnode/load",
-            data={
-                "uuid": parent_mux_uuid,
-            },
-        ) as response:
-            resp = await response.json()
+        updated = 0
+        for mux in all_muxes:
+            iptv_url: str = mux.get("iptv_url", "")
+            if not iptv_url or new_mux_uuid in iptv_url:
+                continue
 
-        load_mux: list = resp.get("entries", [])
-        if not load_mux:
-            raise ValueError("Cannot load Abertis PPID mux")
+            target = re.search(r"[a-fA-F0-9]{32}", iptv_url)
+            target_uuid = target.group(0) if target else ""
 
-        mux_loaded_data = load_mux[0]
+            # Either it points at a service we just retired, or it is the mux
+            # this pPID is named for and has drifted (e.g. dangling from a run
+            # that only fixed its twin).
+            if not (
+                target_uuid in orphaned
+                or (target_muxname and mux.get("iptv_muxname", "") == target_muxname)
+            ):
+                continue
 
-        new_mux_data = {}
-
-        found_iptv_url = False
-        for mux_param in mux_loaded_data.get("params", []):
-            new_mux_data[mux_param.get("id")] = mux_param.get("value")
-
-            if mux_param.get("id") == "iptv_url":
-                found_iptv_url = True
-
-        if not found_iptv_url:
-            raise ValueError("Cannot find iptv_url param in mux data")
-
-        # Add missing uuid field
-        new_mux_data["uuid"] = parent_mux_uuid
-
-        if new_mux_uuid not in new_mux_data["iptv_url"]:
-            logger.warning("MUX doesn't point to the correct service, updating it.")
-
-            new_mux_data["iptv_url"] = re.sub(
-                r"[a-fA-F0-9]{32}", new_mux_uuid, new_mux_data["iptv_url"], count=1
+            # Swap the uuid we know is in there rather than the first 32 hex
+            # chars anywhere, which a custom --pipe-command could well hold.
+            new_iptv_url = (
+                iptv_url.replace(target_uuid, new_mux_uuid)
+                if target_uuid
+                else re.sub(r"[a-fA-F0-9]{32}", new_mux_uuid, iptv_url, count=1)
             )
 
-            async with session.post(
-                f"{arg.get_base_url()}/api/idnode/save",
-                data={
-                    "node": json.dumps(new_mux_data),
-                },
-            ) as response:
-                resp = await response.json()
+            await tvh_set_mux_iptv_url(
+                session, arg.get_base_url(), mux["uuid"], new_iptv_url
+            )
+            logger.warning(
+                "MUX {} didn't point to the correct service, updated it.",
+                mux.get("iptv_muxname", mux["uuid"]),
+            )
+            updated += 1
 
-            return new_mux_uuid
+        if not updated:
+            return None
+
+        return new_mux_uuid
 
 
-@backoff.on_exception(backoff.expo, ConnectionError, max_time=10)
+# requests raises its own ConnectionError, a sibling of the builtin rather than a
+# subclass, so naming only the builtin here would never retry anything. Repointing
+# a mux makes TVheadend restart it and drop the subscription we are about to read,
+# so the first attempt tearing down is normal: the retry streams from the mux we
+# have just corrected.
+@backoff.on_exception(
+    backoff.expo,
+    (ConnectionError, requests.exceptions.ConnectionError),
+    max_time=10,
+)
 @app.command(help="Proxy for Abertis streams")
 def proxy(arg: ProxyArgs):
 

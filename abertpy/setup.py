@@ -9,8 +9,12 @@ from pydantic_typer import Typer
 from abertpy import _HARDCODED_KEY
 from abertpy.helpers import (
     patch_original_SID_svc,
+    tvh_delete_svcs,
+    tvh_find_overrides,
     tvh_get_muxes,
     tvh_get_networks,
+    tvh_get_svc_SID,
+    tvh_set_mux_iptv_url,
 )
 from abertpy.models import SetupArgs
 
@@ -334,61 +338,15 @@ async def tvh_find_service_uuid(
     mux_uuid: str,
     service_sid: int,
 ) -> str:
-    async with session.post(
-        arg.get_base_url() + "/api/mpegts/service/grid",
-        data={
-            "hidemode": "none",
-            "filter": json.dumps(
-                [
-                    {
-                        "type": "numeric",
-                        "comparison": "eq",
-                        "field": "sid",
-                        "value": service_sid,
-                    }
-                ]
-            ),
-        },
-    ) as response:
-        resp = await response.json()
+    service = await tvh_get_svc_SID(
+        session, arg.get_base_url(), service_sid, mux_uuid=mux_uuid
+    )
+    if service is None:
+        raise ValueError(
+            f"Service UUID not found for SID {service_sid} in mux {mux_uuid}"
+        )
 
-    for service in resp.get("entries", []):
-        if service.get("multiplex_uuid", "") == mux_uuid:
-            return service["uuid"]
-
-    raise ValueError(f"Service UUID not found for SID {service_sid} in mux {mux_uuid}")
-
-
-async def tvh_override_exists(
-    session: aiohttp.ClientSession,
-    arg: SetupArgs,
-    mux_uuid: str,
-    private_pid: int,
-) -> str | None:
-    async with session.post(
-        arg.get_base_url() + "/api/mpegts/service/grid",
-        data={
-            "hidemode": "none",
-            "filter": json.dumps(
-                [
-                    {
-                        "type": "string",
-                        "field": "svcname",
-                        "value": _HARDCODED_KEY,
-                    }
-                ]
-            ),
-        },
-    ) as response:
-        resp = await response.json()
-
-    for service in resp.get("entries", []):
-        if (
-            service.get("multiplex_uuid", "") == mux_uuid
-            and service.get("sid", -1) == private_pid
-            and _HARDCODED_KEY in service.get("svcname", "")
-        ):
-            return service["uuid"]
+    return service["uuid"]
 
 
 async def recreate_tvh_service(
@@ -399,17 +357,18 @@ async def recreate_tvh_service(
     service_sid: int,
 ) -> str:
 
-    svc_uuid: str | None = None
-
-    # Extract original SID always.
-    tvh_original_uuid: str = await tvh_find_service_uuid(
-        session, arg, mux_uuid, service_sid
-    )
-    tvh_overriden_uuid: str | None = await tvh_override_exists(
-        session, arg, mux_uuid, private_pid
+    overrides = await tvh_find_overrides(
+        session, arg.get_base_url(), mux_uuid, private_pid
     )
 
-    svc_uuid = tvh_overriden_uuid or tvh_original_uuid
+    # Reuse an existing override, else hijack the service TVheadend scanned. Both
+    # go through raw/export, which preserves the uuid on re-import, so the node we
+    # read here is the node the mux ends up streaming from.
+    svc_uuid: str = (
+        overrides[0]["uuid"]
+        if overrides
+        else await tvh_find_service_uuid(session, arg, mux_uuid, service_sid)
+    )
 
     async with session.get(
         arg.get_base_url() + "/api/raw/export",
@@ -425,8 +384,12 @@ async def recreate_tvh_service(
         _MAP_PPID_CA[private_pid] = pcr
 
     # Avoid duplicates
-    if tvh_overriden_uuid:
-        return tvh_overriden_uuid
+    if overrides:
+        stale = [svc["uuid"] for svc in overrides[1:]]
+        if stale:
+            deleted = await tvh_delete_svcs(session, arg.get_base_url(), stale)
+            logger.info("pPID {}: reaped {} stale override(s)", private_pid, deleted)
+        return svc_uuid
 
     patch_original_SID_svc(sid_original, private_pid, str(service_sid))
 
@@ -438,7 +401,7 @@ async def recreate_tvh_service(
     ) as response:
         pass
 
-    return tvh_original_uuid
+    return svc_uuid
 
 
 async def recreate_tvh_iptv_mux(
@@ -451,6 +414,7 @@ async def recreate_tvh_iptv_mux(
 ):
 
     target_muxname = f"{_HARDCODED_KEY}: MUX {mux_freq} pPID {private_pid}"
+    iptv_url = arg.get_iptv_pipe(svc_mux_uuid=svc_mux_uuid, allowed_pid=private_pid)
 
     muxes = await tvh_get_muxes(session, arg.get_base_url())
 
@@ -462,6 +426,16 @@ async def recreate_tvh_iptv_mux(
             mux.get("network_uuid", None) == iptv_network_uuid
             and mux.get("iptv_muxname", "") == target_muxname
         ):
+            # The mux outlives the service it names, so an existing one can still
+            # point at a service that has since been replaced or reaped, leaving
+            # it streaming from a disabled or dangling uuid.
+            if mux.get("iptv_url", "") != iptv_url:
+                await tvh_set_mux_iptv_url(
+                    session, arg.get_base_url(), mux["uuid"], iptv_url
+                )
+                logger.info(
+                    "pPID {}: repointed mux to service {}", private_pid, svc_mux_uuid
+                )
             return
 
     async with session.post(
@@ -473,9 +447,7 @@ async def recreate_tvh_iptv_mux(
                     "enabled": 1,
                     "epg": 1,
                     "epg_module_id": "",
-                    "iptv_url": arg.get_iptv_pipe(
-                        svc_mux_uuid=svc_mux_uuid, allowed_pid=private_pid
-                    ),
+                    "iptv_url": iptv_url,
                     "use_libav": 0,
                     "iptv_atsc": False,
                     "iptv_muxname": target_muxname,
