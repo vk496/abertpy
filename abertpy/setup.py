@@ -15,6 +15,7 @@ from abertpy.helpers import (
     tvh_get_networks,
     tvh_get_svc_SID,
     tvh_set_mux_iptv_url,
+    tvh_svc_mux_name,
 )
 from abertpy.models import SetupArgs
 
@@ -54,9 +55,11 @@ _FREQ_MATCH_KHZ = 2500
 # fast-scan mode; a full scan (the default) looks at the whole network.
 ABERTIS_SCAN_MUXES: frozenset[str] = frozenset(
     {
+        "11222H",
         "11302H",
         "11347H",
         "11382H",
+        "11502V",
         "11653H",
         "11675H",
         "12548V",
@@ -540,13 +543,37 @@ async def setup_async(arg: SetupArgs):
                     service_sid=service_sid,
                 )
 
+                # Name the mux after the transponder the service actually sits
+                # on, never the one we meant to tune. The two only diverge when
+                # something went wrong -- a mis-locked tuner, or an override that
+                # has since moved to where its SID really lives -- and taking the
+                # intended name would bake that mistake into the label forever,
+                # leaving a mux that streams one transponder while claiming
+                # another. proxy resolves the same name from the service too, so
+                # both agree on where a mux belongs.
+                svc_mux_freq = (
+                    await tvh_svc_mux_name(
+                        session, arg.get_base_url(), svc_mux_uuid, abertis_data_pid
+                    )
+                    or mux_freq
+                )
+                if svc_mux_freq != mux_freq:
+                    logger.warning(
+                        "pPID {} was scanned on {} but its service lives on {}; "
+                        "naming the mux after {}",
+                        abertis_data_pid,
+                        mux_freq,
+                        svc_mux_freq,
+                        svc_mux_freq,
+                    )
+
                 await recreate_tvh_iptv_mux(
                     session,
                     arg,
                     iptv_network_uuid=abertis_net_uuid,
                     svc_mux_uuid=svc_mux_uuid,
                     private_pid=abertis_data_pid,
-                    mux_freq=mux_freq,
+                    mux_freq=svc_mux_freq,
                 )
 
                 map_dataPID_SID[abertis_data_pid] = service_sid

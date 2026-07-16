@@ -144,6 +144,17 @@ async def tvh_find_overrides(
     return overrides
 
 
+async def tvh_svc_mux_name(
+    session: aiohttp.ClientSession, base_url: str, svc_uuid: str, sid: int
+) -> str:
+    """Name of the transponder a service actually sits on, "" if not found."""
+    for svc in await tvh_get_svc_grid(session, base_url, sid=sid):
+        if svc.get("uuid", "") == svc_uuid:
+            return svc.get("multiplex", "")
+
+    return ""
+
+
 async def tvh_delete_svcs(
     session: aiohttp.ClientSession, base_url: str, uuids: list[str]
 ) -> int:
