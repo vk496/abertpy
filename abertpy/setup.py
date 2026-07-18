@@ -230,7 +230,7 @@ async def get_mux_data(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    stdout, _ = process.communicate(input=buffer)
+    stdout, _ = process.communicate(input=bytes(buffer))
     tsanlyze_output = json.loads(stdout)
 
     return tsanlyze_output
@@ -401,7 +401,7 @@ async def recreate_tvh_service(
         data={
             "node": json.dumps(sid_original),
         },
-    ) as response:
+    ):
         pass
 
     return svc_uuid
@@ -459,7 +459,7 @@ async def recreate_tvh_iptv_mux(
                 }
             ),
         },
-    ) as response:
+    ):
         pass
 
 

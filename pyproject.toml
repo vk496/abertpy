@@ -29,3 +29,12 @@ packages = ["abertpy"]
 
 [tool.hatch.build.targets.sdist]
 only-include = ["abertpy"]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.411",
+    "ruff>=0.15.22",
+]
+
+[tool.pyright]
+include = ["abertpy"]

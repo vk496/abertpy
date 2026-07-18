@@ -279,7 +279,7 @@ class SetupArgs(CommonArgs):
 
             except Exception as e:
                 raise ValueError(
-                    f"Bad abertpy binary. Consider disabling this validation"
+                    "Bad abertpy binary. Consider disabling this validation"
                 ) from e
 
         return self
@@ -303,7 +303,7 @@ class SetupArgs(CommonArgs):
             if "TSDuck" not in ret.stderr:
                 raise ValueError(f"Wrong tsanalyze binary?. {ret}")
         except Exception as e:
-            raise ValueError(f"Error running tsanalyze") from e
+            raise ValueError("Error running tsanalyze") from e
 
         return Path(bin_path)
 

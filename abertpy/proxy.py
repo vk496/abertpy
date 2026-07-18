@@ -131,6 +131,7 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
         )
 
         # Validate if mux needs to be recreated
+        stale: list[str] = []
         if (
             svc_hispasat_original is None
             or svc_hispasat_original.get("uuid", "") == current_abertpy_mux
@@ -160,7 +161,7 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
                 data={
                     "node": json.dumps(svc_hispasat_raw),
                 },
-            ) as response:
+            ):
                 pass
 
             # Reap every override this one replaces, not just the uuid the mux
