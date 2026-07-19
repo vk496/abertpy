@@ -42,6 +42,7 @@ async def tvh_get_svc_grid(
     *,
     sid: int | str | None = None,
     svcname: str | None = None,
+    multiplex_uuid: str | None = None,
 ) -> list[dict]:
     """Query the service grid, narrowing server-side and always with a limit."""
     filters: list[dict] = []
@@ -51,6 +52,10 @@ async def tvh_get_svc_grid(
         )
     if svcname is not None:
         filters.append({"type": "string", "field": "svcname", "value": svcname})
+    if multiplex_uuid is not None:
+        filters.append(
+            {"type": "string", "field": "multiplex_uuid", "value": multiplex_uuid}
+        )
 
     data: dict = {"hidemode": "none", "limit": _GRID_LIMIT}
     if filters:

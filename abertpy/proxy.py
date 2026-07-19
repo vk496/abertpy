@@ -145,6 +145,29 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
             None,
         )
 
+        # Fetched early (and reused below) so the single summary log line at
+        # the end can name this pPID the same way TVheadend's own UI does,
+        # e.g. "abertpy: MUX 11653H pPID 303".
+        all_muxes: list = (await tvh_get_muxes(session, arg.get_base_url())).get(
+            "entries", []
+        )
+        dvb_mux_name: str = next(
+            (
+                mux.get("name", "")
+                for mux in all_muxes
+                if mux["uuid"] == parent_dvb_mux_uuid
+            ),
+            "",
+        )
+        target_muxname = (
+            f"{_HARDCODED_KEY}: MUX {dvb_mux_name} pPID {original_ppid}"
+            if dvb_mux_name
+            else ""
+        )
+        # target_muxname itself must stay "" when unresolved, since it's also
+        # matched against mux names below; this is purely for the log lines.
+        mux_label = target_muxname or f"pPID {original_ppid}"
+
         # Get original Hispasat SVC from SID
         svc_hispasat_original = await tvh_get_svc_SID(
             session=session,
@@ -155,19 +178,16 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
 
         # Validate if mux needs to be recreated
         stale: list[str] = []
+        recreated = False
+        deleted = 0
         if (
             svc_hispasat_original is None
             or svc_hispasat_original.get("uuid", "") == current_abertpy_mux
         ):
             new_mux_uuid = current_abertpy_mux
-            logger.debug(
-                "No need to recreate mux, already pointing to original service"
-            )
         else:
             new_mux_uuid: str = svc_hispasat_original.get("uuid", "")
-
-            # Mux was changed. Recreate it
-            logger.warning("Recreating Abertis mux to point to original service")
+            recreated = True
 
             # Obtain the RAW one
 
@@ -202,26 +222,6 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
                 stale = [svc_overriden["uuid"]]
 
             deleted = await tvh_delete_svcs(session, arg.get_base_url(), stale)
-            logger.info("pPID {}: reaped {} stale override(s)", private_pid, deleted)
-
-        # Update mux references (iptv_url) to the new UUID of the service
-        all_muxes: list = (await tvh_get_muxes(session, arg.get_base_url())).get(
-            "entries", []
-        )
-
-        dvb_mux_name: str = next(
-            (
-                mux.get("name", "")
-                for mux in all_muxes
-                if mux["uuid"] == parent_dvb_mux_uuid
-            ),
-            "",
-        )
-        target_muxname = (
-            f"{_HARDCODED_KEY}: MUX {dvb_mux_name} pPID {original_ppid}"
-            if dvb_mux_name
-            else ""
-        )
 
         # More than one mux can share a service: an early scan of the wrong
         # transponder left muxes named for one and fed by another, and those are
@@ -233,6 +233,7 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
         orphaned: set[str] = set(stale) | {current_abertpy_mux}
 
         updated = 0
+        touched_mux_uuids: list[str] = []
         for mux in all_muxes:
             iptv_url: str = mux.get("iptv_url", "")
             if not iptv_url or new_mux_uuid in iptv_url:
@@ -261,11 +262,36 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
             await tvh_set_mux_iptv_url(
                 session, arg.get_base_url(), mux["uuid"], new_iptv_url
             )
-            logger.warning(
-                "MUX {} didn't point to the correct service, updated it.",
-                mux.get("iptv_muxname", mux["uuid"]),
-            )
             updated += 1
+            touched_mux_uuids.append(mux["uuid"])
+
+        if recreated or updated:
+            # Best-effort: the mux we just repointed is where TVheadend scans
+            # a real playable service (and the viewer-facing channel name,
+            # usually identical) from, e.g. "La 1 UHD" -- much more useful
+            # here than the internal pPID/transponder label alone.
+            channel_names: dict[str, None] = {}
+            for mux_uuid in touched_mux_uuids:
+                for svc in await tvh_get_svc_grid(
+                    session, arg.get_base_url(), multiplex_uuid=mux_uuid
+                ):
+                    name = svc.get("svcname")
+                    if name:
+                        channel_names[name] = None
+            label = (
+                f"{mux_label} ({', '.join(channel_names)})"
+                if channel_names
+                else mux_label
+            )
+
+            details = []
+            if recreated:
+                details.append(f"recreated (reaped {deleted} stale override(s))")
+            if updated:
+                details.append(f"repointed {updated} mux(es) still on the old service")
+            logger.warning("{}: {}", label, "; ".join(details))
+        else:
+            logger.debug("{}: already correct, nothing to do", mux_label)
 
         if not updated:
             return None
