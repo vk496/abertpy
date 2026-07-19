@@ -92,6 +92,23 @@ class ProxyArgs(CommonArgs):
         ),
     ]
 
+    read_chunk_log2: Annotated[
+        int,
+        typer.Option(
+            " ",
+            "--read-chunk-log2",
+            help=(
+                "log2 of the read/write batch size in bytes (16 = 64KB). Reading "
+                "and writing one 188-byte TS frame at a time (as this used to do) "
+                "measured ~5x more CPU than batching against a real captured "
+                "channel; 14-20 all perform well, with returns past that "
+                "flattening and then reversing (past ~22) from larger buffer "
+                "allocation/copy overhead outweighing the saved call overhead."
+            ),
+            metavar="N",
+        ),
+    ] = Field(default=16, ge=8, le=24)
+
     @pydantic.model_validator(mode="after")
     def validate_service_uuid(self):
         async def validate_tvheadend_url(tvheadend_url, service_uuid):
