@@ -4,7 +4,6 @@ from collections import defaultdict
 
 import aiohttp
 from loguru import logger
-from pydantic_typer import Typer
 
 from abertpy import _HARDCODED_KEY
 from abertpy.helpers import (
@@ -15,8 +14,6 @@ from abertpy.helpers import (
     tvh_set_mux_iptv_url,
 )
 from abertpy.models import CleanupArgs
-
-app = Typer()
 
 # "abertpy: MUX 11222H pPID 2060" -> transponder name + pPID
 _MUXNAME_RE = re.compile(rf"^{re.escape(_HARDCODED_KEY)}: MUX (\S+) pPID (\d+)$")
@@ -135,6 +132,5 @@ async def cleanup_async(arg: CleanupArgs) -> None:
         logger.info("Deleted {} stale service(s)", deleted)
 
 
-@app.command(help="Remove duplicate abertpy services left by earlier runs")
 def cleanup(arg: CleanupArgs):
     return asyncio.run(cleanup_async(arg))

@@ -8,9 +8,7 @@ from collections.abc import Iterator
 import aiohttp
 import backoff
 import requests
-import typer
 from loguru import logger
-from pydantic_typer import Typer
 
 from abertpy import _HARDCODED_KEY
 from abertpy.helpers import (
@@ -25,8 +23,6 @@ from abertpy.helpers import (
 )
 from abertpy.models import ProxyArgs
 from abertpy.setup import patch_original_SID_svc
-
-app = Typer()
 
 ######################################
 ######################################
@@ -361,7 +357,6 @@ def _stream(arg: ProxyArgs) -> None:
             sys.stdout.buffer.write(out)
 
 
-@app.command(help="Proxy for Abertis streams")
 def proxy(arg: ProxyArgs):
     try:
         _stream(arg)
@@ -374,4 +369,4 @@ def proxy(arg: ProxyArgs):
         # say why we stopped, not dump a full traceback for an expected,
         # already-retried condition.
         logger.warning("Giving up on service {}: {}", arg.service_uuid, e)
-        raise typer.Exit(1)
+        sys.exit(1)

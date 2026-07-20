@@ -1,5 +1,5 @@
 
-from abertpy.args import app
+from abertpy.args import main
 
 if __name__ == "__main__":
-    app()
+    main()

@@ -4,13 +4,12 @@ import subprocess
 import sys
 from datetime import timedelta
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Self
 
 import aiohttp
 import pydantic
-import typer
 from loguru import logger
-from pydantic import ByteSize, Field
+from pydantic import AliasChoices, ByteSize, Field
 
 from abertpy import _HARDCODED_KEY
 from abertpy.helpers import (
@@ -28,24 +27,19 @@ _REFERENCE_PROXY = "proxy"
 class CommonArgs(pydantic.BaseModel):
     model_config = pydantic.ConfigDict(validate_default=True)
 
-    debug: Annotated[
-        bool,
-        typer.Option(
-            "-d",
-            "--debug",
-            help="Debug info",
-        ),
-    ] = False
+    debug: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("d", "debug"),
+        description="Debug info",
+    )
 
-    tvheadend_url: Annotated[
-        pydantic.HttpUrl,
-        typer.Option(
-            "-t",
-            "--tvhurl",
-            help="Base URL of the TVheadend server. Ex: http://tvheadend.lan:9981/doesnt_matter_the_path",
-            metavar="URL",
+    tvheadend_url: pydantic.HttpUrl = Field(
+        validation_alias=AliasChoices("t", "tvhurl"),
+        description=(
+            "Base URL of the TVheadend server. Ex: "
+            "http://tvheadend.lan:9981/doesnt_matter_the_path"
         ),
-    ]
+    )
 
     @pydantic.field_validator("debug")
     @classmethod
@@ -80,59 +74,46 @@ class CommonArgs(pydantic.BaseModel):
 class ProxyArgs(CommonArgs):
     model_config = pydantic.ConfigDict(validate_default=True)
 
-    service_uuid: Annotated[
-        str,
-        typer.Option(
-            "-s",
-            "--service",
-            help="UUID of the Abertis service to proxy",
-        ),
-    ]
+    service_uuid: str = Field(
+        validation_alias=AliasChoices("s", "service"),
+        description="UUID of the Abertis service to proxy",
+    )
 
-    allowed_pid: Annotated[
-        int,
-        typer.Option(
-            "-a",
-            "--allowed-pids",
-            help="Allowed MPEG TS PID for decapsulation",
-        ),
-    ]
+    allowed_pid: int = Field(
+        validation_alias=AliasChoices("a", "allowed-pids"),
+        description="Allowed MPEG TS PID for decapsulation",
+    )
 
-    read_chunk_log2: Annotated[
-        int,
-        typer.Option(
-            " ",
-            "--read-chunk-log2",
-            help=(
-                "log2 of the read/write batch size in bytes (16 = 64KB). Reading "
-                "and writing one 188-byte TS frame at a time (as this used to do) "
-                "measured ~5x more CPU than batching against a real captured "
-                "channel; 14-20 all perform well, with returns past that "
-                "flattening and then reversing (past ~22) from larger buffer "
-                "allocation/copy overhead outweighing the saved call overhead."
-            ),
-            metavar="N",
+    read_chunk_log2: int = Field(
+        default=16,
+        ge=8,
+        le=24,
+        validation_alias=AliasChoices("read-chunk-log2"),
+        description=(
+            "log2 of the read/write batch size in bytes (16 = 64KB). Reading "
+            "and writing one 188-byte TS frame at a time (as this used to do) "
+            "measured ~5x more CPU than batching against a real captured "
+            "channel; 14-20 all perform well, with returns past that "
+            "flattening and then reversing (past ~22) from larger buffer "
+            "allocation/copy overhead outweighing the saved call overhead."
         ),
-    ] = Field(default=16, ge=8, le=24)
+    )
 
-    dvb_mux: Annotated[
-        str,
-        typer.Option(
-            " ",
-            "--dvb-mux",
-            help=(
-                "Name of the real transponder this pPID is expected to live on "
-                "(e.g. 11302H), baked into the pipe command at setup time. The "
-                "same pPID number legitimately repeats across different "
-                "transponders, so this is what lets the self-heal below (for "
-                "when TVheadend's own scan prunes the hijacked service) pick "
-                "the right one instead of any same-numbered override anywhere "
-                "in the system. Empty for pipe commands installed before this "
-                "option existed -- those can only self-heal when the pPID "
-                "happens to be unique network-wide."
-            ),
+    dvb_mux: str = Field(
+        default="",
+        validation_alias=AliasChoices("dvb-mux"),
+        description=(
+            "Name of the real transponder this pPID is expected to live on "
+            "(e.g. 11302H), baked into the pipe command at setup time. The "
+            "same pPID number legitimately repeats across different "
+            "transponders, so this is what lets the self-heal below (for "
+            "when TVheadend's own scan prunes the hijacked service) pick "
+            "the right one instead of any same-numbered override anywhere "
+            "in the system. Empty for pipe commands installed before this "
+            "option existed -- those can only self-heal when the pPID "
+            "happens to be unique network-wide."
         ),
-    ] = ""
+    )
 
     @pydantic.model_validator(mode="after")
     def validate_service_uuid(self):
@@ -272,7 +253,7 @@ class ProxyArgs(CommonArgs):
                                 network_uuid,
                                 "-t",
                                 base_url,
-                                "--no--validate-abertpy",
+                                "--no-validate-abertpy",
                             ],
                             capture_output=True,
                             text=True,
@@ -321,124 +302,110 @@ class ProxyArgs(CommonArgs):
         )
         return self
 
+    def cli_cmd(self) -> None:
+        from abertpy.proxy import proxy
+
+        proxy(self)
+
 
 class CleanupArgs(CommonArgs):
     model_config = pydantic.ConfigDict(validate_default=True)
 
-    apply: Annotated[
-        bool,
-        typer.Option(
-            " ",
-            "--apply/--dry-run",
-            help="Actually delete the stale services. Default only reports them.",
-        ),
-    ] = False
+    apply: bool = Field(
+        default=False,
+        description="Actually delete the stale services. Default only reports them.",
+    )
+
+    def cli_cmd(self) -> None:
+        from abertpy.cleanup import cleanup
+
+        cleanup(self)
 
 
 class SetupArgs(CommonArgs):
     model_config = pydantic.ConfigDict(validate_default=True)
 
-    network_uuid: Annotated[
-        str | None,
-        typer.Option(
-            "-n",
-            "--network-uuid",
-            help="DVB-S Network containing Abertis muxes (usually Hispasat 30W). Empty to list all networks.",
+    network_uuid: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("n", "network-uuid"),
+        description=(
+            "DVB-S Network containing Abertis muxes (usually Hispasat 30W). "
+            "Empty to list all networks."
         ),
-    ] = None
+    )
 
-    tsanalyze_path: Annotated[
-        Path | None,
-        typer.Option(
-            " ",
-            "--path-tsanalyze",
-            help="Path to the tsanalyze binary from TSDuck. Will search for 'tsanalyze' by default",
-            exists=True,
-            file_okay=True,
-            dir_okay=False,
-            writable=False,
-            readable=True,
-            resolve_path=True,
+    tsanalyze_path: Path | None = Field(
+        default=None,
+        validation_alias=AliasChoices("path-tsanalyze"),
+        description=(
+            "Path to the tsanalyze binary from TSDuck. Will search for "
+            "'tsanalyze' by default"
         ),
-    ] = None
+    )
 
-    mux_buffer_size: Annotated[
-        ByteSize,
-        typer.Option(
-            " ",
-            "--max-buffer-size",
-            help="Amount of data to buffer from each mux before analyzing",
-            metavar="SIZE",
+    mux_buffer_size: ByteSize = Field(
+        default="50MB",
+        validation_alias=AliasChoices("max-buffer-size"),
+        description="Amount of data to buffer from each mux before analyzing",
+    )
+
+    mux_buffer_time: timedelta = Field(
+        default="PT10S",
+        validation_alias=AliasChoices("max-buffer-time"),
+        description="Maximum time to wait for buffering each mux before analyzing",
+    )
+
+    abertpy_path: Path | None = Field(
+        default=Path("/usr/local/bin/abertpy"),
+        validation_alias=AliasChoices("path-abertpy"),
+        description=(
+            "Command to execute for self referencing abertpyin IPTV mux. It "
+            "will be injected later for TVHeadend IPTV proxy"
         ),
-    ] = Field(
-        default="50MB"
-    )  # type: ignore
+    )
 
-    mux_buffer_time: Annotated[
-        timedelta,
-        typer.Option(
-            " ",
-            "--max-buffer-time",
-            help="Maximum time to wait for buffering each mux before analyzing",
-            metavar="ISO 8601",
+    abertpy_validate_binary: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("validate-abertpy"),
+        description="Validate the abertpy binary. Disable if running outside the TVHeadend host",
+    )
+
+    fast_scan: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("fast-scan"),
+        description=(
+            "Only scan the muxes known to carry Abertis instead of the whole "
+            "network. Faster, but misses any Abertis mux not in the known "
+            "list. Default scans everything."
         ),
-    ] = "PT10S"  # type: ignore
+    )
 
-    abertpy_path: Annotated[
-        Path | None,
-        typer.Option(
-            " ",
-            "--path-abertpy",
-            help="Command to execute for self referencing abertpyin IPTV mux. It will be injected later for TVHeadend IPTV proxy",
+    only_muxes: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("mux"),
+        description=(
+            "Scan only these mux names (repeatable), e.g. --mux 11675H --mux "
+            "12631V. Names not present as targets are ignored. Overrides "
+            "--fast-scan. Default scans everything."
         ),
-    ] = Path("/usr/local/bin/abertpy")
+    )
 
-    abertpy_validate_binary: Annotated[
-        bool,
-        typer.Option(
-            " ",
-            "--validate-abertpy/--no--validate-abertpy",
-            help="Validate the abertpy binary. Disable if running outside the TVHeadend host",
+    proxy_url: pydantic.HttpUrl = Field(
+        default="http://127.0.0.1:9981/",
+        validation_alias=AliasChoices("proxy-url"),
+        description=(
+            "TVheadend URL baked into the installed proxy pipe command. Runs "
+            "on the TVheadend host, so it usually points to localhost."
         ),
-    ] = True
+    )
 
-    fast_scan: Annotated[
-        bool,
-        typer.Option(
-            " ",
-            "--fast-scan/--no-fast-scan",
-            help="Only scan the muxes known to carry Abertis instead of the whole network. Faster, but misses any Abertis mux not in the known list. Default scans everything.",
+    iptv_pipe_string: str = Field(
+        default=(
+            "pipe://{abertpy_path} proxy -a {allowed_pid} -t {proxy_url} "
+            "-s {svc_mux_uuid} --dvb-mux {dvb_mux_name}"
         ),
-    ] = False
-
-    only_muxes: Annotated[
-        list[str],
-        typer.Option(
-            " ",
-            "--mux",
-            help="Scan only these mux names (repeatable), e.g. --mux 11675H --mux 12631V. Names not present as targets are ignored. Overrides --fast-scan. Default scans everything.",
-            metavar="NAME",
-        ),
-    ] = []
-
-    proxy_url: Annotated[
-        pydantic.HttpUrl,
-        typer.Option(
-            " ",
-            "--proxy-url",
-            help="TVheadend URL baked into the installed proxy pipe command. Runs on the TVheadend host, so it usually points to localhost.",
-            metavar="URL",
-        ),
-    ] = Field(
-        default="http://127.0.0.1:9981/"
-    )  # type: ignore
-
-    iptv_pipe_string: Annotated[
-        str,
-        typer.Option(
-            " ",
-            "--pipe-command",
-            help="""DVB-S Network containing Abertis muxes (usually Hispasat 30W). Empty to list all networks. Allowed variables:
+        validation_alias=AliasChoices("pipe-command"),
+        description="""DVB-S Network containing Abertis muxes (usually Hispasat 30W). Empty to list all networks. Allowed variables:
             \n
             * abertpy_path: Full path to abertpy command\n
             * allowed_pid: Private PID number of the REMUX\n
@@ -447,10 +414,6 @@ class SetupArgs(CommonArgs):
             * proxy_url: URL baked into the proxy command (--proxy-url)\n
             * dvb_mux_name: Name of the real transponder this pPID lives on (e.g. 11302H)
             """,
-        ),
-    ] = (
-        "pipe://{abertpy_path} proxy -a {allowed_pid} -t {proxy_url} "
-        "-s {svc_mux_uuid} --dvb-mux {dvb_mux_name}"
     )
 
     @pydantic.model_validator(mode="after")
@@ -515,18 +478,18 @@ class SetupArgs(CommonArgs):
         # No (valid) network selected: print the available ones cleanly and exit
         # instead of surfacing a noisy validation traceback.
         if self.network_uuid is None:
-            typer.echo("Select a network with --network-uuid. Available networks:")
+            print("Select a network with --network-uuid. Available networks:")
         else:
-            typer.echo(
+            print(
                 f"Network UUID {self.network_uuid!r} not found. Available networks:",
-                err=True,
+                file=sys.stderr,
             )
 
         width = max((len(u) for u in all_networks), default=0)
         for net_uuid, net_name in all_networks.items():
-            typer.echo(f"  {net_uuid:<{width}}  {net_name}")
+            print(f"  {net_uuid:<{width}}  {net_name}")
 
-        raise typer.Exit(0 if self.network_uuid is None else 1)
+        sys.exit(0 if self.network_uuid is None else 1)
 
     def get_iptv_pipe(
         self, svc_mux_uuid: str, allowed_pid: int, dvb_mux_name: str
@@ -539,3 +502,15 @@ class SetupArgs(CommonArgs):
             allowed_pid=allowed_pid,
             dvb_mux_name=dvb_mux_name,
         )
+
+    def cli_cmd(self) -> None:
+        from abertpy.setup import setup
+
+        setup(self)
+
+
+class PingArgs(pydantic.BaseModel):
+    def cli_cmd(self) -> None:
+        from abertpy.ping import ping
+
+        ping()

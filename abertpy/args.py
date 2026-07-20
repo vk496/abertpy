@@ -1,40 +1,39 @@
-from typing import Annotated, Optional
+import sys
 
-import typer
-from pydantic_typer import Typer
+import pydantic
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings, CliApp, CliSubCommand
 
 from abertpy import __version__
-from abertpy.cleanup import app as cleanup_app
-from abertpy.ping import app as ping_app
-from abertpy.proxy import app as proxy_app
-from abertpy.setup import app as setup_app
-
-app = Typer()
+from abertpy.models import CleanupArgs, PingArgs, ProxyArgs, SetupArgs
 
 
-def _version_callback(value: bool) -> None:
-    if value:
-        typer.echo(f"abertpy {__version__}")
-        raise typer.Exit()
+class App(BaseSettings, cli_parse_args=True, cli_implicit_flags=True, case_sensitive=True):
+    version: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("V", "version"),
+        description="Show the abertpy version and exit.",
+    )
+
+    ping: CliSubCommand[PingArgs]
+    proxy: CliSubCommand[ProxyArgs]
+    setup: CliSubCommand[SetupArgs]
+    cleanup: CliSubCommand[CleanupArgs]
+
+    def cli_cmd(self) -> None:
+        if self.version:
+            print(f"abertpy {__version__}")
+            return
+        CliApp.run_subcommand(self)
 
 
-@app.callback()
-def main(
-    version: Annotated[
-        Optional[bool],
-        typer.Option(
-            "--version",
-            "-V",
-            callback=_version_callback,
-            is_eager=True,
-            help="Show the abertpy version and exit.",
-        ),
-    ] = None,
-) -> None:
-    pass
+def main() -> None:
+    try:
+        CliApp.run(App)
+    except pydantic.ValidationError as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
 
 
-app.add_typer(setup_app)
-app.add_typer(proxy_app)
-app.add_typer(cleanup_app)
-app.add_typer(ping_app)
+if __name__ == "__main__":
+    main()

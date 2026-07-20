@@ -4,7 +4,6 @@ import subprocess
 
 import aiohttp
 from loguru import logger
-from pydantic_typer import Typer
 
 from abertpy import _HARDCODED_KEY
 from abertpy.helpers import (
@@ -18,8 +17,6 @@ from abertpy.helpers import (
     tvh_svc_mux_name,
 )
 from abertpy.models import SetupArgs
-
-app = Typer()
 
 _MAP_PPID_CA: dict[int, int] = {}
 
@@ -612,7 +609,6 @@ async def setup_async(arg: SetupArgs):
         )
 
 
-@app.command(help="Install everything on TVHeadend")
 def setup(arg: SetupArgs):
     logger.info("Setup arguments:\n{}", arg.model_dump_json(indent=2))
 
