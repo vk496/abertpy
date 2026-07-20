@@ -24,6 +24,21 @@ async def tvh_get_networks(session: aiohttp.ClientSession, base_url: str):
         return networks
 
 
+async def tvh_find_abertpy_network(
+    session: aiohttp.ClientSession, base_url: str
+) -> str | None:
+    """UUID of the abertpy-managed IPTV network, if it already exists."""
+    networks = await tvh_get_networks(session, base_url)
+    return next(
+        (
+            net["uuid"]
+            for net in networks.get("entries", [])
+            if _HARDCODED_KEY in net.get("networkname", "")
+        ),
+        None,
+    )
+
+
 async def tvh_get_muxes(session: aiohttp.ClientSession, base_url: str):
     networks_url = base_url + "/api/mpegts/mux/grid"
     async with session.post(

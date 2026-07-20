@@ -10,9 +10,9 @@ from abertpy import _HARDCODED_KEY
 from abertpy.helpers import (
     patch_original_SID_svc,
     tvh_delete_svcs,
+    tvh_find_abertpy_network,
     tvh_find_overrides,
     tvh_get_muxes,
-    tvh_get_networks,
     tvh_get_svc_SID,
     tvh_set_mux_iptv_url,
     tvh_svc_mux_name,
@@ -289,13 +289,10 @@ async def scan_mux_verified(
 
 async def create_iptv_network(session: aiohttp.ClientSession, arg: SetupArgs) -> str:
 
-    # Find network with pnetworkname containing abertpy
-    networks = await tvh_get_networks(session, arg.get_base_url())
-
-    for network in networks.get("entries", []):
-        if _HARDCODED_KEY in network.get("networkname", ""):
-            logger.info(f"IPTV Network already exist: {network.get('networkname')}")
-            return network.get("uuid")
+    existing_uuid = await tvh_find_abertpy_network(session, arg.get_base_url())
+    if existing_uuid:
+        logger.info(f"IPTV Network already exists: {existing_uuid}")
+        return existing_uuid
 
     async with (
         session.post(
@@ -392,6 +389,20 @@ async def recreate_tvh_service(
         if stale:
             deleted = await tvh_delete_svcs(session, arg.get_base_url(), stale)
             logger.info("pPID {}: reaped {} stale override(s)", private_pid, deleted)
+
+        # tsanalyze just confirmed this pPID is live in the current broadcast,
+        # so a disabled override here is stale state (TVheadend disables a
+        # service once a scan decides it isn't real) rather than a reason to
+        # leave the channel dead until someone notices and fixes it by hand.
+        if not sid_original.get("enabled"):
+            sid_original["enabled"] = True
+            async with session.post(
+                arg.get_base_url() + "/api/raw/import",
+                data={"node": json.dumps(sid_original)},
+            ):
+                pass
+            logger.info("pPID {}: re-enabled disabled override", private_pid)
+
         return svc_uuid
 
     patch_original_SID_svc(sid_original, private_pid, str(service_sid))
@@ -417,7 +428,9 @@ async def recreate_tvh_iptv_mux(
 ):
 
     target_muxname = f"{_HARDCODED_KEY}: MUX {mux_freq} pPID {private_pid}"
-    iptv_url = arg.get_iptv_pipe(svc_mux_uuid=svc_mux_uuid, allowed_pid=private_pid)
+    iptv_url = arg.get_iptv_pipe(
+        svc_mux_uuid=svc_mux_uuid, allowed_pid=private_pid, dvb_mux_name=mux_freq
+    )
 
     muxes = await tvh_get_muxes(session, arg.get_base_url())
 
