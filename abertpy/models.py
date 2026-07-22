@@ -99,6 +99,21 @@ class ProxyArgs(CommonArgs):
         ),
     )
 
+    retry_seconds: int = Field(
+        default=120,
+        ge=0,
+        validation_alias=AliasChoices("retry-seconds"),
+        description=(
+            "How long to keep retrying a dropped stream before giving up. "
+            "TVheadend closes our connection immediately with 'No input "
+            "source available' whenever every tuner is already busy, and that "
+            "clears only when some other subscription releases one -- "
+            "routinely much longer than the few seconds one teardown takes. "
+            "Too short a budget and the proxy exits, TVheadend respawns the "
+            "pipe, and the channel appears to start and then break in a loop."
+        ),
+    )
+
     dvb_mux: str = Field(
         default="",
         validation_alias=AliasChoices("dvb-mux"),

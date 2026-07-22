@@ -3,7 +3,8 @@ import json
 import re
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from typing import Any
 
 import aiohttp
 import backoff
@@ -153,6 +154,27 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
 
         private_pid: int = int(svc_overriden.get("sid"))  # type: ignore
 
+        # TVheadend disables an override once a scan notices its sid is not a
+        # real SID in the PAT. A disabled service refuses to stream, and
+        # TVheadend rejects the subscription with "No input source available"
+        # without ever touching a tuner -- which arrives here as an immediate
+        # connection close, indistinguishable from every tuner being busy.
+        #
+        # The recreate below cannot notice this: it only looks for a *rival*
+        # service carrying the original SID, and TVheadend creates no such
+        # service when it simply disables ours in place. So flip it back first,
+        # re-importing the node as-is (never re-patching it, which would append
+        # a second copy of the CA and H264 streams every time).
+        reenabled = False
+        if not svc_overriden.get("enabled", True):
+            svc_overriden["enabled"] = True
+            async with session.post(
+                arg.get_base_url() + "/api/raw/import",
+                data={"node": json.dumps(svc_overriden)},
+            ):
+                pass
+            reenabled = True
+
         # raw/export carries no mux reference, so resolve the transponder our
         # override lives on from the grid. Without it the SID lookup below could
         # match the same SID on a different transponder.
@@ -287,7 +309,7 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
             updated += 1
             touched_mux_uuids.append(mux["uuid"])
 
-        if recreated or updated:
+        if recreated or updated or reenabled:
             # Best-effort: the mux we just repointed is where TVheadend scans
             # a real playable service (and the viewer-facing channel name,
             # usually identical) from, e.g. "La 1 UHD" -- much more useful
@@ -307,6 +329,8 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
             )
 
             details = []
+            if reenabled:
+                details.append("re-enabled an override TVheadend had disabled")
             if recreated:
                 details.append(f"recreated (reaped {deleted} stale override(s))")
             if updated:
@@ -321,16 +345,6 @@ async def recreate_mux_if_needed(arg: ProxyArgs) -> str | None:
         return new_mux_uuid
 
 
-# requests raises its own ConnectionError, a sibling of the builtin rather than a
-# subclass, so naming only the builtin here would never retry anything. Repointing
-# a mux makes TVheadend restart it and drop the subscription we are about to read,
-# so the first attempt tearing down is normal: the retry streams from the mux we
-# have just corrected.
-@backoff.on_exception(
-    backoff.expo,
-    (ConnectionError, requests.exceptions.ConnectionError),
-    max_time=10,
-)
 def _stream(arg: ProxyArgs) -> None:
     base_url = arg.get_base_url()
 
@@ -357,16 +371,51 @@ def _stream(arg: ProxyArgs) -> None:
             sys.stdout.buffer.write(out)
 
 
+def _log_retry(details: Mapping[str, Any]) -> None:
+    logger.debug(
+        "Stream attempt {} failed ({}); retrying in {:.1f}s",
+        details["tries"],
+        details.get("value") or "connection lost",
+        details["wait"],
+    )
+
+
 def proxy(arg: ProxyArgs):
+    # requests raises its own ConnectionError, a sibling of the builtin rather
+    # than a subclass, so naming only the builtin would never retry anything.
+    #
+    # Two distinct transients land here, and both can outlast any short window:
+    #  - Repointing a mux makes TVheadend restart it and drop the subscription
+    #    we are about to read, so the first attempt tearing down is normal.
+    #  - Far more often, every tuner is already busy and TVheadend closes the
+    #    connection at once with "No input source available". That clears only
+    #    when some other subscription lets a tuner go, which is unrelated to
+    #    anything we do and routinely takes longer than a few seconds.
+    #
+    # So the budget has to cover waiting for a tuner, not just one teardown.
+    # max_value caps the exponential interval so a long budget still means many
+    # attempts rather than a handful of increasingly distant ones.
+    stream = backoff.on_exception(
+        backoff.expo,
+        (ConnectionError, requests.exceptions.ConnectionError),
+        max_time=arg.retry_seconds,
+        max_value=5,
+        jitter=backoff.full_jitter,
+        on_backoff=_log_retry,
+    )(_stream)
+
     try:
-        _stream(arg)
+        stream(arg)
     except (ConnectionError, requests.exceptions.ConnectionError) as e:
-        # TVheadend drops our subscription whenever it repoints or rescans the
-        # underlying mux; the retries above already cover that case. Getting
-        # here means the connection kept failing for the whole retry window
-        # (e.g. TVheadend itself is unavailable) -- TVheadend will spawn us
-        # again once the channel is next needed, so there's nothing to do but
-        # say why we stopped, not dump a full traceback for an expected,
-        # already-retried condition.
-        logger.warning("Giving up on service {}: {}", arg.service_uuid, e)
+        # Getting here means the connection kept failing for the whole retry
+        # window (e.g. TVheadend itself is unavailable, or the tuners never
+        # freed up) -- TVheadend will spawn us again once the channel is next
+        # needed, so there's nothing to do but say why we stopped, not dump a
+        # full traceback for an expected, already-retried condition.
+        logger.warning(
+            "Giving up on service {} after {}s: {}",
+            arg.service_uuid,
+            arg.retry_seconds,
+            e,
+        )
         sys.exit(1)
